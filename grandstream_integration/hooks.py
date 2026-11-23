@@ -27,6 +27,9 @@ app_license = "mit"
 # include js, css files in header of desk.html
 # app_include_css = "/assets/grandstream_integration/css/grandstream_integration.css"
 # app_include_js = "/assets/grandstream_integration/js/grandstream_integration.js"
+# app_include_js = [
+#     "/grandstream_integration/grandstream_integration/public/js/grandstream_click_to_call.js"
+# ]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/grandstream_integration/css/grandstream_integration.css"
@@ -47,6 +50,16 @@ app_license = "mit"
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
+
+scheduler_events = {
+    "cron": {
+        "*/30 * * * *": [
+            "grandstream_integration.utils.sync_active_calls",
+            "grandstream_integration.utils.sync_ended_calls",
+            "grandstream_integration.tasks.sync_inbound_external_calls",
+        ]
+    }
+}
 
 # Svg Icons
 # ------------------
@@ -132,7 +145,9 @@ app_license = "mit"
 # override_doctype_class = {
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
-
+override_doctype_class = {
+    "CRM Call Log": "grandstream_integration.overrides.crm_call_log.CustomCRMCallLog"
+}
 # Document Events
 # ---------------
 # Hook on document methods and events
@@ -147,7 +162,6 @@ app_license = "mit"
 
 # Scheduled Tasks
 # ---------------
-
 # scheduler_events = {
 # 	"all": [
 # 		"grandstream_integration.tasks.all"
@@ -176,6 +190,10 @@ app_license = "mit"
 #
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "grandstream_integration.event.get_events"
+# }
+# override_whitelisted_methods = {
+#     "crm.integrations.api.get_recording_url": 
+#     "grandstream_integration.api.get_recording_url"
 # }
 #
 # each overriding function accepts a `data` argument;
