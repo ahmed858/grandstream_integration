@@ -9,8 +9,11 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def _get_settings(settings_name):
-    return frappe.get_doc("Grandstream Settings", settings_name)
+def _get_settings(settings_name=None):
+    # Falls back to the first settings record if this name was deleted or renamed.
+    from grandstream_integration.utils import _get_settings as resolve_settings
+
+    return resolve_settings(settings_name)
 
 
 def _ucm_url(settings) -> str:
@@ -134,5 +137,33 @@ def get_cdr_by_start_time(start_time: str, end_time: str = None) -> list:
         print(f"[UCM CDR] {len(records)} records | {payload.get('startTime')} → {payload.get('endTime', 'open')}")
         return records
 
+    finally:
+        _logout(settings, cookie)
+
+
+# ── Recordings ───────────────────────────────────────────────────────────────
+
+def fetch_recording(filename: str, settings=None) -> bytes:
+    """
+    Download one call recording (wav) from the UCM and return its bytes.
+    Always logs out of the UCM afterwards, so no sessions are left open.
+    """
+    settings = settings or _get_settings("5gs6lirpf6")
+    cookie = _login(settings)
+    if not cookie:
+        raise RuntimeError("Failed to authenticate with Grandstream UCM Server.")
+
+    try:
+        resp = requests.get(
+            _ucm_url(settings),
+            params={"action": "recapi", "filedir": "monitor", "filename": filename, "cookie": cookie},
+            verify=False,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        # On errors the UCM answers 200 with a small JSON body instead of the audio.
+        if resp.content[:1] == b"{":
+            raise RuntimeError(f"UCM could not return recording {filename}: {resp.text[:200]}")
+        return resp.content
     finally:
         _logout(settings, cookie)

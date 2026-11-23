@@ -63,6 +63,22 @@ def _parse_recording(record_files):
     return record_files.split("/")[1].replace("@", "") or None
 
 
+def _queue_ai_analysis(call_log):
+    """
+    Queue the AI analysis of a finished call (does nothing unless AI is enabled).
+    Any error is logged and swallowed: the AI feature must never break call syncing.
+    """
+    try:
+        from grandstream_integration.ai.analysis import enqueue_analysis
+
+        enqueue_analysis(call_log)
+    except Exception:
+        frappe.log_error(
+            title=f"Grandstream: failed to queue AI analysis for {call_log.name}",
+            message=frappe.get_traceback(),
+        )
+
+
 def _safe_get_active_calls():
     """
     Fetch active calls from UCM.
@@ -289,6 +305,8 @@ def sync_ended_calls():
                 call_log.recording_url = recording
 
             call_log.save(ignore_permissions=True)
+            if new_status == "Completed" and call_log.recording_url:
+                _queue_ai_analysis(call_log)
             frappe.publish_realtime("call_log_update", {
                 "name":   log_name,
                 "status": new_status,

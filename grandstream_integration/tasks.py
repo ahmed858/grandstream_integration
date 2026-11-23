@@ -1,5 +1,5 @@
 import frappe
-from grandstream_integration.utils import sync_active_calls, sync_ended_calls
+from grandstream_integration.utils import _queue_ai_analysis, sync_active_calls, sync_ended_calls
 from grandstream_integration.ucm_api import get_cdr_by_start_time, _get_settings
 
 @frappe.whitelist()
@@ -90,6 +90,8 @@ def sync_inbound_external_calls():
             call_log.insert(ignore_permissions=True)
             frappe.db.commit()
             synced += 1
+            if call_log.status == "Completed" and recording_url:
+                _queue_ai_analysis(call_log)
 
         except Exception as e:
             frappe.log_error(

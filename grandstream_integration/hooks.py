@@ -57,9 +57,15 @@ scheduler_events = {
             "grandstream_integration.utils.sync_active_calls",
             "grandstream_integration.utils.sync_ended_calls",
             "grandstream_integration.tasks.sync_inbound_external_calls",
-        ]
+        ],
+        "0 * * * *": [
+            "grandstream_integration.ai.analysis.retry_pending_analyses",
+        ],
     }
 }
+
+# Creates/updates the AI call analysis custom fields on every migrate.
+after_migrate = ["grandstream_integration.ai.setup.install"]
 
 # Svg Icons
 # ------------------
