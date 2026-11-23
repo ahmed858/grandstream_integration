@@ -1,65 +1,61 @@
 import frappe
-import requests
-import urllib3
+from werkzeug.exceptions import RequestedRangeNotSatisfiable
 from werkzeug.wrappers import Response
-from grandstream_integration.ucm_api import _login  #
 
-# تعطيل تحذيرات الـ SSL للسيرفر الداخلي
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) #
+from grandstream_integration.ucm_api import fetch_recording
+
+# The browser asks for the file again (in byte ranges) every time the user seeks.
+# Keeping the recording a few minutes avoids a new UCM login + download per seek.
+CACHE_SECONDS = 600
+
 
 @frappe.whitelist()
 def get_recording_url(call_log_name: str):
-    """جلب دفق التسجيل الصوتي من Grandstream ومحاكاة سلوك الـ CRM الأصلي"""
+    """جلب التسجيل الصوتي من Grandstream للـ player في صفحة المكالمة (بديل Twilio)"""
     if not call_log_name or not frappe.db.exists("CRM Call Log", call_log_name):
         frappe.throw("Call log not found", frappe.DoesNotExistError)
 
-    log = frappe.get_doc("CRM Call Log", call_log_name) #
+    log = frappe.get_doc("CRM Call Log", call_log_name)
+    # Only users who can open this call may listen to it.
+    log.check_permission("read")
 
     # لو المكالمة مش تبع Grandstream، حوّلها فوراً للدالة الأصلية للـ CRM
-    if log.telephony_medium != "Grandstream": #
-        from crm.integrations.api import get_recording_url as crm_get_recording_url #
-        return crm_get_recording_url(call_log_name) #
+    if log.telephony_medium != "Grandstream":
+        from crm.integrations.api import get_recording_url as crm_get_recording_url
 
-    filename = log.get("recording_url") #
-    if not filename: #
+        return crm_get_recording_url(call_log_name)
+
+    filename = log.get("recording_url")
+    if not filename:
         frappe.throw("Recording URL/Filename not found", frappe.DoesNotExistError)
 
-    # جلب الإعدادات وعمل تسجيل دخول للسيرفر
-    settings = frappe.get_doc("Grandstream Settings", '5gs6lirpf6') #
-    cookie = _login(settings) #
-    if not cookie: #
-        frappe.throw("Failed to authenticate with Grandstream UCM Server.") #
+    audio = _get_audio(filename)
 
-    # بناء رابط الـ Grandstream المباشر للملف
-    ucm_url = ( #
-        f"https://{settings.ucm_host}:{settings.ucm_port}" #
-        f"/api?action=recapi&filedir=monitor&filename={filename}&cookie={cookie}" #
-    )
-    print("UCM URL:", ucm_url)      # ✅ اطبع الـ URL عشان نتأكد من الـ filename
-    print("Filename:", filename)
+    response = Response(audio, mimetype="audio/wav")  # الـ Grandstream بيسجل wav
+    response.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    response.headers["Cache-Control"] = f"private, max-age={CACHE_SECONDS}"
+    # Real seek support: answers "Range: bytes=..." with 206 + only the requested bytes,
+    # instead of sending the whole file again for every seek.
     try:
-        # طلب الملف من السيرفر كـ stream
-        with requests.get(ucm_url, verify=False, stream=True, timeout=15) as r: #
-            print("Status:", r.status_code)
-            print("Content-Type:", r.headers.get("Content-Type"))
-            print("First 100 bytes:", r.content[:100])
-            r.raise_for_status() #
-            
-            # بناء كائن الـ Response بنفس أسلوب الـ CRM الأصلي تماماً
-            response = Response() #
-            response.data = r.content #
-            
-            # إرسال نوع الميديا المناسب (الـ Grandstream بيسجل wav)
-            response.mimetype = "audio/wav"
-            
-            # إضافة هيدرز إضافية لضمان قراءة المتصفح للمشغل والـ Seek بسلاسة
-            response.headers.update({
-                "Content-Disposition": f'inline; filename="{filename}"',
-                "Accept-Ranges": "bytes"
-            })
-            return response #
+        return response.make_conditional(
+            frappe.request.environ, accept_ranges=True, complete_length=len(audio)
+        )
+    except RequestedRangeNotSatisfiable:
+        return Response(status=416, headers={"Content-Range": f"bytes */{len(audio)}"})
 
-    except requests.exceptions.RequestException as e: #
-        frappe.log_error(message=str(e), title="Grandstream Recording Proxy Error") #
-        frappe.throw("Error communicating with Grandstream server.") #
-        return e
+
+def _get_audio(filename):
+    key = f"grandstream_recording::{filename}"
+    cache = frappe.cache()
+    audio = cache.get_value(key)
+    if audio:
+        return audio
+
+    try:
+        audio = fetch_recording(filename)
+    except Exception:
+        frappe.log_error(title="Grandstream Recording Proxy Error", message=frappe.get_traceback())
+        frappe.throw("Error communicating with Grandstream server.")
+
+    cache.set_value(key, audio, expires_in_sec=CACHE_SECONDS)
+    return audio
