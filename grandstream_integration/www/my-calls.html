@@ -1,0 +1,114 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ _("My Call Reviews") }}{% endblock %}
+
+{% block page_content %}
+<style>
+	.mc { max-width: 960px; margin: 0 auto; padding: 16px 0; }
+	.mc h1 { font-size: 1.5rem; margin-bottom: 4px; }
+	.mc .muted { color: var(--text-muted, #6b7280); font-size: .875rem; }
+	.mc .stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+	.mc .stat { border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; padding: 12px 16px; min-width: 140px; }
+	.mc .stat b { display: block; font-size: 1.4rem; }
+	.mc table { width: 100%; border-collapse: collapse; }
+	.mc th, .mc td { padding: 8px; border-bottom: 1px solid var(--border-color, #e5e7eb); vertical-align: top; text-align: start; }
+	.mc .ar { direction: rtl; text-align: right; }
+	.mc .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: .75rem; background: #f3f4f6; }
+	.mc .ok { background: #dcfce7; } .mc .no { background: #fee2e2; }
+	.mc section { margin: 20px 0; }
+	.mc pre { white-space: pre-wrap; font-family: inherit; background: #f9fafb; border-radius: 8px; padding: 12px; }
+</style>
+
+<div class="mc">
+{% if call %}
+	<p><a href="/my-calls{% if is_manager and marketer != frappe.session.user %}?marketer={{ marketer | urlencode }}{% endif %}">&larr; {{ _("All calls") }}</a></p>
+	<h1>{{ _("Call") }} {{ call.name }}</h1>
+	<p class="muted">
+		{{ _(call.type) }} · {{ frappe.format(call.start_time, {"fieldtype": "Datetime"}) }} · {{ call.duration or 0 }}s
+		{% if call.reference_docname %} · {{ call.reference_doctype }} {{ call.reference_docname }}{% endif %}
+	</p>
+
+	<div class="stats">
+		<div class="stat"><span class="muted">{{ _("Overall score") }}</span><b>{{ call.custom_ai_overall_score or "-" }} / 5</b></div>
+		<div class="stat"><span class="muted">{{ _("Goal reached") }}</span><b>{{ _("Yes") if call.custom_ai_success else _("No") }}</b></div>
+		<div class="stat"><span class="muted">{{ _("Customer") }}</span><b class="ar">{{ call.custom_ai_interested or "-" }}</b></div>
+		<div class="stat"><span class="muted">{{ _("Service") }}</span><b class="ar">{{ call.custom_ai_service or "-" }}</b></div>
+	</div>
+
+	{% if call.recording_path %}
+	<section><audio controls preload="none" src="{{ call.recording_path }}" style="width:100%"></audio></section>
+	{% endif %}
+
+	<section>
+		<h3>{{ _("What to improve") }}</h3>
+		<ul class="ar">{% for c in call.coaching %}<li>{{ c }}</li>{% endfor %}</ul>
+	</section>
+
+	<section>
+		<h3>{{ _("Scores") }}</h3>
+		<table>
+			<tr><th>{{ _("Criterion") }}</th><th>{{ _("Score") }}</th><th>{{ _("Reason") }}</th></tr>
+			{% for s in call.scores %}
+			<tr><td>{{ _(s.label) }}</td><td><b>{{ s.score }}</b> / 5</td><td class="ar">{{ s.reason }}</td></tr>
+			{% endfor %}
+		</table>
+	</section>
+
+	<section>
+		<h3>{{ _("Summary") }}</h3>
+		<p class="ar">{{ call.custom_ai_summary or "" }}</p>
+		<p class="ar">{{ call.custom_ai_customer_profile or "" }}</p>
+		{% if call.custom_ai_not_interested_check %}<p class="ar">{{ call.custom_ai_not_interested_check }}</p>{% endif %}
+		{% if call.custom_ai_next_step %}
+		<p><b>{{ _("Next step") }}:</b> <span class="ar">{{ call.custom_ai_next_step }}</span>
+			{% if call.custom_ai_next_step_date %}({{ frappe.format(call.custom_ai_next_step_date, {"fieldtype": "Date"}) }}){% endif %}</p>
+		{% endif %}
+	</section>
+
+	{% if call.objections %}
+	<section>
+		<h3>{{ _("Objections") }}</h3>
+		<table>
+			<tr><th>{{ _("Customer said") }}</th><th>{{ _("Your answer") }}</th><th></th></tr>
+			{% for o in call.objections %}
+			<tr><td class="ar">{{ o.objection }}</td><td class="ar">{{ o.marketer_response }}</td>
+				<td><span class="badge {{ 'ok' if o.handled_well else 'no' }}">{{ _("Handled well") if o.handled_well else _("Needs work") }}</span></td></tr>
+			{% endfor %}
+		</table>
+	</section>
+	{% endif %}
+
+	<section>
+		<h3>{{ _("Transcript") }}</h3>
+		<pre class="ar">{{ call.custom_ai_transcript or "" }}</pre>
+	</section>
+
+{% else %}
+	<h1>{{ _("My Call Reviews") }}</h1>
+	<p class="muted">{{ marketer }}{% if not is_manager %} · {{ _("Only you and your managers can see these reviews.") }}{% endif %}</p>
+
+	<div class="stats">
+		<div class="stat"><span class="muted">{{ _("Analysed calls") }}</span><b>{{ summary.count }}</b></div>
+		<div class="stat"><span class="muted">{{ _("Average score") }}</span><b>{{ summary.avg or "-" }} / 5</b></div>
+		<div class="stat"><span class="muted">{{ _("Goal reached") }}</span><b>{{ summary.success }} / {{ summary.count }}</b></div>
+	</div>
+
+	{% if calls %}
+	<table>
+		<tr><th>{{ _("Date") }}</th><th>{{ _("Type") }}</th><th>{{ _("Score") }}</th><th>{{ _("Customer") }}</th><th>{{ _("Summary") }}</th></tr>
+		{% for c in calls %}
+		<tr>
+			<td><a href="/my-calls?call={{ c.name | urlencode }}{% if is_manager and marketer != frappe.session.user %}&marketer={{ marketer | urlencode }}{% endif %}">{{ frappe.format(c.start_time, {"fieldtype": "Datetime"}) }}</a></td>
+			<td>{{ _(c.type) }}</td>
+			<td><b>{{ c.custom_ai_overall_score or "-" }}</b> <span class="badge {{ 'ok' if c.custom_ai_success else 'no' }}">{{ _("Goal reached") if c.custom_ai_success else _("Goal missed") }}</span></td>
+			<td class="ar">{{ c.custom_ai_interested or "-" }}</td>
+			<td class="ar">{{ (c.custom_ai_summary or "") | truncate(140) }}</td>
+		</tr>
+		{% endfor %}
+	</table>
+	{% else %}
+	<p class="muted">{{ _("No analysed calls yet.") }}</p>
+	{% endif %}
+{% endif %}
+</div>
+{% endblock %}

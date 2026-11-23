@@ -52,20 +52,25 @@ app_license = "mit"
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
 scheduler_events = {
-    "cron": {
-        "*/30 * * * *": [
-            "grandstream_integration.utils.sync_active_calls",
-            "grandstream_integration.utils.sync_ended_calls",
-            "grandstream_integration.tasks.sync_inbound_external_calls",
-        ],
-        "0 * * * *": [
-            "grandstream_integration.ai.analysis.retry_pending_analyses",
-        ],
-    }
+	"cron": {
+		"*/30 * * * *": [
+			"grandstream_integration.utils.sync_active_calls",
+			"grandstream_integration.utils.sync_ended_calls",
+			"grandstream_integration.tasks.sync_inbound_external_calls",
+		],
+		"0 * * * *": [
+			"grandstream_integration.ai.analysis.retry_pending_analyses",
+		],
+	}
 }
 
 # Creates/updates the AI call analysis custom fields on every migrate.
 after_migrate = ["grandstream_integration.ai.setup.install"]
+
+# Marketers open their own call reviews at /my-calls.
+website_route_rules = [
+	{"from_route": "/my-calls", "to_route": "my-calls"},
+]
 
 # Svg Icons
 # ------------------
@@ -151,9 +156,7 @@ after_migrate = ["grandstream_integration.ai.setup.install"]
 # override_doctype_class = {
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
-override_doctype_class = {
-    "CRM Call Log": "grandstream_integration.overrides.crm_call_log.CustomCRMCallLog"
-}
+override_doctype_class = {"CRM Call Log": "grandstream_integration.overrides.crm_call_log.CustomCRMCallLog"}
 # Document Events
 # ---------------
 # Hook on document methods and events
@@ -198,7 +201,7 @@ override_doctype_class = {
 # 	"frappe.desk.doctype.event.event.get_events": "grandstream_integration.event.get_events"
 # }
 # override_whitelisted_methods = {
-#     "crm.integrations.api.get_recording_url": 
+#     "crm.integrations.api.get_recording_url":
 #     "grandstream_integration.api.get_recording_url"
 # }
 #
@@ -270,4 +273,3 @@ override_doctype_class = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
