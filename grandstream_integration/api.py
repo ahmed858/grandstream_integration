@@ -11,7 +11,7 @@ CACHE_SECONDS = 600
 
 @frappe.whitelist()
 def get_recording_url(call_log_name: str):
-	"""جلب التسجيل الصوتي من Grandstream للـ player في صفحة المكالمة (بديل Twilio)"""
+	"""Stream a Grandstream recording to the call page player (replaces the Twilio endpoint)."""
 	if not call_log_name or not frappe.db.exists("CRM Call Log", call_log_name):
 		frappe.throw("Call log not found", frappe.DoesNotExistError)
 
@@ -19,7 +19,7 @@ def get_recording_url(call_log_name: str):
 	# Only users who can open this call may listen to it.
 	log.check_permission("read")
 
-	# لو المكالمة مش تبع Grandstream، حوّلها فوراً للدالة الأصلية للـ CRM
+	# Not a Grandstream call: hand it to the original CRM endpoint.
 	if log.telephony_medium != "Grandstream":
 		from crm.integrations.api import get_recording_url as crm_get_recording_url
 
@@ -31,7 +31,7 @@ def get_recording_url(call_log_name: str):
 
 	audio = _get_audio(filename)
 
-	response = Response(audio, mimetype="audio/wav")  # الـ Grandstream بيسجل wav
+	response = Response(audio, mimetype="audio/wav")  # Grandstream records wav
 	response.headers["Content-Disposition"] = f'inline; filename="{filename}"'
 	response.headers["Cache-Control"] = f"private, max-age={CACHE_SECONDS}"
 	# Real seek support: answers "Range: bytes=..." with 206 + only the requested bytes,
