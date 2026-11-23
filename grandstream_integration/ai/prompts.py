@@ -25,21 +25,21 @@ TRANSCRIBE = """\
 """
 
 OUTGOING_CRITERIA = [
-    ("الافتتاحية", "عرّف بنفسه وبالشركة وسبب الاتصال"),
-    ("فهم الاحتياج", "اتأكد إن العميل لسه مهتم، وسأل عن نوع الطلب والميزانية والتوقيت"),
-    ("العرض", "عرض الخدمة أو العقار بشكل مناسب للاحتياج"),
-    ("الاعتراضات", "رد على اعتراضات العميل بهدوء وإقناع"),
-    ("الإغلاق", "اتفق على خطوة جاية محددة بتاريخ (معاينة، اجتماع، تسجيل في مزاد، إرسال عرض)"),
-    ("الأسلوب", "استمع كويس، وما قاطعش العميل، وكان محترف"),
+	("الافتتاحية", "عرّف بنفسه وبالشركة وسبب الاتصال"),
+	("فهم الاحتياج", "اتأكد إن العميل لسه مهتم، وسأل عن نوع الطلب والميزانية والتوقيت"),
+	("العرض", "عرض الخدمة أو العقار بشكل مناسب للاحتياج"),
+	("الاعتراضات", "رد على اعتراضات العميل بهدوء وإقناع"),
+	("الإغلاق", "اتفق على خطوة جاية محددة بتاريخ (معاينة، اجتماع، تسجيل في مزاد، إرسال عرض)"),
+	("الأسلوب", "استمع كويس، وما قاطعش العميل، وكان محترف"),
 ]
 
 INCOMING_CRITERIA = [
-    ("الافتتاحية", "رحّب بالعميل وعرّف بنفسه"),
-    ("فهم الاحتياج", "فهم طلب العميل أو مشكلته صح"),
-    ("العرض", "المعلومة أو الحل اللي قدمه صح وواضح"),
-    ("الاعتراضات", "تعامل كويس مع العميل لو كان متضايق أو معترض"),
-    ("الإغلاق", "العميل خرج عارف هيحصل إيه بعد كده"),
-    ("الأسلوب", "استمع كويس، وما قاطعش العميل، وكان محترف"),
+	("الافتتاحية", "رحّب بالعميل وعرّف بنفسه"),
+	("فهم الاحتياج", "فهم طلب العميل أو مشكلته صح"),
+	("العرض", "المعلومة أو الحل اللي قدمه صح وواضح"),
+	("الاعتراضات", "تعامل كويس مع العميل لو كان متضايق أو معترض"),
+	("الإغلاق", "العميل خرج عارف هيحصل إيه بعد كده"),
+	("الأسلوب", "استمع كويس، وما قاطعش العميل، وكان محترف"),
 ]
 
 OUTGOING_SUCCESS = """\
@@ -59,15 +59,13 @@ INCOMING_SUCCESS = """\
 
 
 def criteria_for(call_type):
-    return OUTGOING_CRITERIA if call_type == "Outgoing" else INCOMING_CRITERIA
+	return OUTGOING_CRITERIA if call_type == "Outgoing" else INCOMING_CRITERIA
 
 
 def system(company_context, call_type):
-    criteria = "\n".join(
-        f"{i}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_for(call_type), 1)
-    )
-    success = OUTGOING_SUCCESS if call_type == "Outgoing" else INCOMING_SUCCESS
-    return f"""\
+	criteria = "\n".join(f"{i}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_for(call_type), 1))
+	success = OUTGOING_SUCCESS if call_type == "Outgoing" else INCOMING_SUCCESS
+	return f"""\
 إنت مشرف جودة مكالمات في شركة أماكن، وبتقيّم مكالمة واحدة من نصها المكتوب.
 
 ## عن الشركة
@@ -89,13 +87,13 @@ def system(company_context, call_type):
 
 
 def analysis_input(call_type, transcript, reference=None, duration=None):
-    direction = "صادرة (المسوق اتصل)" if call_type == "Outgoing" else "واردة (العميل اتصل)"
-    lines = [f"نوع المكالمة: {direction}"]
-    if duration:
-        lines.append(f"مدة المكالمة: {duration} ثانية")
-    if reference:
-        lines.append(f"مرتبطة بـ: {reference}")
-    lines.append("")
-    lines.append("## نص المكالمة")
-    lines.append(transcript)
-    return "\n".join(lines)
+	direction = "صادرة (المسوق اتصل)" if call_type == "Outgoing" else "واردة (العميل اتصل)"
+	lines = [f"نوع المكالمة: {direction}"]
+	if duration:
+		lines.append(f"مدة المكالمة: {duration} ثانية")
+	if reference:
+		lines.append(f"مرتبطة بـ: {reference}")
+	lines.append("")
+	lines.append("## نص المكالمة")
+	lines.append(transcript)
+	return "\n".join(lines)
