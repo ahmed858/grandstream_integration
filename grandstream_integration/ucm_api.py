@@ -9,11 +9,8 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def _get_settings(settings_name=None):
-    # Falls back to the first settings record if this name was deleted or renamed.
-    from grandstream_integration.utils import _get_settings as resolve_settings
-
-    return resolve_settings(settings_name)
+def _get_settings(settings_name):
+    return frappe.get_doc("Grandstream Settings", settings_name)
 
 
 def _ucm_url(settings) -> str:
