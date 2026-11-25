@@ -68,6 +68,8 @@ def backfill_external_calls(since):
 
 def _sync_external_calls(start_time):
     """Create logs for external calls since start_time. None when the CDR fetch returned nothing."""
+    # get_cdr_by_start_time needs "YYYY-MM-DD HH:MM:SS"; accept a bare date or a datetime too.
+    start_time = frappe.utils.get_datetime(start_time).strftime("%Y-%m-%d %H:%M:%S")
     records = get_cdr_by_start_time(start_time)
 
     if not records:
