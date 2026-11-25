@@ -1,5 +1,5 @@
 import frappe
-from grandstream_integration.utils import _queue_ai_analysis, sync_active_calls, sync_ended_calls
+from grandstream_integration.utils import _map_disposition, _queue_ai_analysis, sync_active_calls, sync_ended_calls
 from grandstream_integration.ucm_api import get_cdr_by_start_time, _get_settings
 
 @frappe.whitelist()
@@ -34,19 +34,60 @@ def _advance_inbound_sync_point(previous):
 
 @frappe.whitelist()
 def sync_inbound_external_calls():
+    """
+    Every 30 minutes: create CRM Call Logs for external calls found in the UCM CDR.
+    Despite the name it handles both directions: calls coming in from outside, and
+    calls dialled out directly from Wave / desk phones (calls made with the CRM call
+    button already have a log and are skipped).
+    """
     settings = _get_settings('5gs6lirpf6')
     # ✅ لو مفيش last sync، ابدأ من امبارح مش دلوقتي
     start_time = settings.last_inbound_calls_sync or frappe.utils.add_days(frappe.utils.nowdate(), -1)
+    result = _sync_external_calls(start_time)
+    if result is None:
+        return {"synced": 0, "skipped": 0}
+
+    # Move the sync point forward on every successful fetch, not only when a call was
+    # created. Otherwise, with no new inbound calls, every run re-reads everything since
+    # the last inbound call. Keep one hour of overlap for calls still in progress at
+    # fetch time; calls already in the CRM are skipped by custom_uniqueid.
+    _advance_inbound_sync_point(settings.last_inbound_calls_sync)
+
+    frappe.logger().info(f"[External Sync] ✅ Synced: {result['synced']} | ⏭ Skipped: {result['skipped']}")
+    return result
+
+
+def backfill_external_calls(since):
+    """
+    One-off, from bench console: import external calls (both directions) that started
+    after `since`, e.g. backfill_external_calls("2026-11-01"). Calls already in the CRM
+    are skipped. Does not move the scheduled sync point.
+    """
+    return _sync_external_calls(str(since))
+
+
+def _sync_external_calls(start_time):
+    """Create logs for external calls since start_time. None when the CDR fetch returned nothing."""
     records = get_cdr_by_start_time(start_time)
 
     if not records:
-        return {"synced": 0, "skipped": 0}
+        return None
 
     synced = 0
     skipped = 0
 
     for record in records:
         try:
+            # Outbound calls dialled directly from Wave / desk phones.
+            # None means "not an outbound external call": fall through to the inbound check.
+            created = _sync_outbound_record(record)
+            if created is not None:
+                if created:
+                    synced += 1
+                else:
+                    skipped += 1
+                continue
+
             sub_1 = record.get("sub_cdr_1", {})
             if not sub_1:
                 skipped += 1
@@ -117,13 +158,6 @@ def sync_inbound_external_calls():
             )
             continue
 
-    # Move the sync point forward on every successful fetch, not only when a call was
-    # created. Otherwise, with no new inbound calls, every run re-reads everything since
-    # the last inbound call. Keep one hour of overlap for calls still in progress at
-    # fetch time; calls already in the CRM are skipped by custom_uniqueid.
-    _advance_inbound_sync_point(settings.last_inbound_calls_sync)
-
-    frappe.logger().info(f"[Inbound Sync] ✅ Synced: {synced} | ⏭ Skipped: {skipped}")
     return {"synced": synced, "skipped": skipped}
     settings = _get_settings('5gs6lirpf6')
     start_time = settings.last_inbound_calls_sync or frappe.utils.now()
@@ -228,6 +262,99 @@ def sync_inbound_external_calls():
 
     frappe.logger().info(f"[Inbound Sync] ✅ Synced: {synced} | ⏭ Skipped: {skipped}")
     return {"synced": synced, "skipped": skipped}
+# ─── Outbound calls dialled outside the CRM ────────────────
+
+# Shorter destinations are service/short codes (e.g. "33"), not customer numbers.
+MIN_EXTERNAL_NUMBER_LENGTH = 6
+
+
+def _sync_outbound_record(record: dict):
+    """
+    Create a CRM Call Log for an outbound external call dialled outside the CRM.
+    Returns None if the record is not an outbound external call, False if it was
+    skipped (already in the CRM), True if a log was created.
+
+    A single-leg call comes from the UCM as a flat record (no sub_cdr_1); a multi-leg
+    call has main_cdr + sub_cdr_N. Both are handled.
+    """
+    legs = _get_all_sub_cdrs(record) or ([record] if record.get("uniqueid") else [])
+    if not legs:
+        return None
+    first = legs[0]
+
+    customer_num = str(first.get("dst", "") or "")
+    is_outbound = first.get("userfield") == "Outbound"
+    to_trunk = bool(first.get("dst_trunk_name"))
+    if not (is_outbound and to_trunk and len(customer_num) >= MIN_EXTERNAL_NUMBER_LENGTH):
+        return None
+
+    uniqueid = first.get("uniqueid", "")
+    # Calls made with the CRM button already have a log (make_call stores the UCM id).
+    # Check every id of the call so a button call is never logged twice.
+    ids = {leg.get("uniqueid") for leg in legs} | {(record.get("main_cdr") or {}).get("uniqueid")}
+    ids = [i for i in ids if i]
+    if not uniqueid or frappe.db.exists("CRM Call Log", {"custom_uniqueid": ["in", ids]}) \
+            or frappe.db.exists("CRM Call Log", {"name": ["in", ids]}):
+        return False
+
+    answered = [leg for leg in legs if leg.get("disposition") == "ANSWERED" and int(leg.get("billsec") or 0) > 0]
+    disposition = "ANSWERED" if answered else (legs[-1].get("disposition") or "NO ANSWER")
+    billsec = int((answered[-1] if answered else first).get("billsec") or 0)
+    end_time = next((leg.get("end") for leg in reversed(legs) if leg.get("end")), "")
+
+    recording_url = ""
+    for leg in legs:
+        rf = leg.get("recordfiles", "")
+        if rf:
+            recording_url = rf.split("@")[0].split("/")[-1]
+            break
+
+    extension = str(first.get("src", "") or "")
+    marketer = frappe.db.get_value("User Extension", {"extension": extension}, "user") if extension else None
+    lead_name = _find_lead_by_number(customer_num)
+
+    call_log = frappe.get_doc({
+        "doctype":           "CRM Call Log",
+        "id":                uniqueid,
+        "name":              uniqueid,
+        "custom_uniqueid":   uniqueid,
+        "custom_linkedid":   uniqueid,
+        "telephony_medium":  "Grandstream",
+        "from":              extension,
+        "to":                customer_num,
+        "type":              "Outgoing",
+        "status":            _map_disposition(disposition),
+        "duration":          billsec,
+        "start_time":        first.get("start", ""),
+        "end_time":          end_time,
+        "recording_url":     recording_url,
+        "caller":            marketer,
+        "reference_doctype": "CRM Lead" if lead_name else "",
+        "reference_docname": lead_name or "",
+    })
+    call_log.insert(ignore_permissions=True)
+    frappe.db.commit()
+    if call_log.status == "Completed" and recording_url:
+        _queue_ai_analysis(call_log)
+    return True
+
+
+def _find_lead_by_number(number: str):
+    """Match a CRM Lead by mobile number, as stored locally (05...) or internationally (966... / +966...)."""
+    number = str(number or "").strip()
+    if not number:
+        return None
+    local = number.lstrip("+")
+    if local.startswith("966"):
+        local = "0" + local[3:]
+    intl = "966" + local.lstrip("0")
+    for candidate in (number, local, intl, "+" + intl):
+        lead = frappe.db.get_value("CRM Lead", {"mobile_no": candidate}, "name")
+        if lead:
+            return lead
+    return None
+
+
 # ─── Helper Functions ───────────────────────────────────────
 
 def _get_all_sub_cdrs(record: dict) -> list:
