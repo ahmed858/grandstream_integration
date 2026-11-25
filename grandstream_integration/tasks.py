@@ -129,6 +129,9 @@ def _sync_external_calls(start_time):
                 caller_intl = "966" + caller_num.lstrip('0')
                 lead_name = frappe.db.get_value("CRM Lead", {"mobile_no": caller_intl}, "name")
 
+            # Extension that answered, or the one dialled when nobody answered.
+            to_number = answered_by or sub_1.get("dst", "")
+
             call_log = frappe.get_doc({
                 "doctype":           "CRM Call Log",
                 "id":                uniqueid,
@@ -137,7 +140,9 @@ def _sync_external_calls(start_time):
                 "custom_linkedid":   uniqueid,
                 "telephony_medium":  "Grandstream",
                 "from":              caller_num,
-                "to":                answered_by or sub_1.get("dst", ""),  # ✅
+                "to":                to_number,
+                # The marketer behind that extension; empty for queues / ring groups.
+                "receiver":          _user_for_extension(to_number),
                 "type":              "Incoming",
                 "status":            "Completed" if final_status == "ANSWERED" else "Missed",
                 "duration":          int(billsec or 0),
@@ -312,7 +317,7 @@ def _sync_outbound_record(record: dict):
             break
 
     extension = str(first.get("src", "") or "")
-    marketer = frappe.db.get_value("User Extension", {"extension": extension}, "user") if extension else None
+    marketer = _user_for_extension(extension)
     lead_name = _find_lead_by_number(customer_num)
 
     call_log = frappe.get_doc({
@@ -339,6 +344,49 @@ def _sync_outbound_record(record: dict):
     if call_log.status == "Completed" and recording_url:
         _queue_ai_analysis(call_log)
     return True
+
+
+def _user_for_extension(extension):
+    """The user mapped to a PBX extension in User Extension, or None."""
+    extension = str(extension or "").strip()
+    if not extension:
+        return None
+    return frappe.db.get_value("User Extension", {"extension": extension}, "user")
+
+
+def backfill_call_receivers(dry_run=True):
+    """
+    One-off, from bench console: fill `receiver` on synced incoming calls that have none,
+    using today's User Extension mapping for the extension in `to`.
+    dry_run=True (default) only counts; pass dry_run=False to write. `modified` is kept.
+    """
+    extension_users = {
+        str(row.extension).strip(): row.user
+        for row in frappe.get_all("User Extension", fields=["extension", "user"])
+        if row.extension and row.user
+    }
+    logs = frappe.get_all(
+        "CRM Call Log",
+        filters={"type": "Incoming", "telephony_medium": "Grandstream", "receiver": ["is", "not set"]},
+        fields=["name", "to"],
+        limit_page_length=0,
+    )
+    matches = [
+        (log.name, extension_users[str(log.to).strip()])
+        for log in logs
+        if log.to and str(log.to).strip() in extension_users
+    ]
+
+    if not dry_run:
+        for name, user in matches:
+            frappe.db.set_value("CRM Call Log", name, "receiver", user, update_modified=False)
+        frappe.db.commit()
+
+    return {
+        "incoming_without_receiver": len(logs),
+        "matched": len(matches),
+        "updated": 0 if dry_run else len(matches),
+    }
 
 
 def _find_lead_by_number(number: str):
