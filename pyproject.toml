@@ -10,6 +10,9 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
     "langchain-google-genai>=4.0,<5",
+    # Frappe 15 pins google-auth~=2.48.0; newer google-genai needs >=2.56 and would
+    # upgrade it under Frappe. Keeping it here makes pip pick a compatible google-genai.
+    "google-auth~=2.48.0",
     "agentops>=0.4,<0.5",
     # agentops 0.4.x reads OTLPSpanExporter._headers, removed in OpenTelemetry 1.45
     "opentelemetry-sdk<1.45",
