@@ -11,6 +11,9 @@ dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
     "langchain-google-genai>=4.0,<5",
     "agentops>=0.4,<0.5",
+    # agentops 0.4.x reads OTLPSpanExporter._headers, removed in OpenTelemetry 1.45
+    "opentelemetry-sdk<1.45",
+    "opentelemetry-exporter-otlp-proto-http<1.45",
 ]
 
 [build-system]
