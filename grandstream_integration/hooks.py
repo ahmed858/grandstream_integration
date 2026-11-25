@@ -149,6 +149,15 @@ website_route_rules = [
 # 	"Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
+# Marketers see only their own call logs; Sales Manager / System Manager see all.
+permission_query_conditions = {
+	"CRM Call Log": "grandstream_integration.permissions.get_call_log_permission_query_conditions",
+}
+
+has_permission = {
+	"CRM Call Log": "grandstream_integration.permissions.has_call_log_permission",
+}
+
 # DocType Class
 # ---------------
 # Override standard doctype classes
