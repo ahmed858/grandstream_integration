@@ -15,6 +15,23 @@ def sync_calls():
         frappe.log_error(f"Sync Calls Error: {str(e)}", "Grandstream Sync")
 
 
+INBOUND_SYNC_OVERLAP_HOURS = 1
+
+
+def _advance_inbound_sync_point(previous):
+    new_point = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=-INBOUND_SYNC_OVERLAP_HOURS)
+    if previous and frappe.utils.get_datetime(previous) >= new_point:
+        return  # never move it backwards
+    frappe.db.set_value(
+        "Grandstream Settings",
+        '5gs6lirpf6',
+        "last_inbound_calls_sync",
+        new_point,
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+
 @frappe.whitelist()
 def sync_inbound_external_calls():
     settings = _get_settings('5gs6lirpf6')
@@ -100,14 +117,11 @@ def sync_inbound_external_calls():
             )
             continue
 
-    if synced > 0:
-        frappe.db.set_value(
-            "Grandstream Settings",
-            '5gs6lirpf6',
-            "last_inbound_calls_sync",
-            frappe.utils.now()
-        )
-        frappe.db.commit()
+    # Move the sync point forward on every successful fetch, not only when a call was
+    # created. Otherwise, with no new inbound calls, every run re-reads everything since
+    # the last inbound call. Keep one hour of overlap for calls still in progress at
+    # fetch time; calls already in the CRM are skipped by custom_uniqueid.
+    _advance_inbound_sync_point(settings.last_inbound_calls_sync)
 
     frappe.logger().info(f"[Inbound Sync] ✅ Synced: {synced} | ⏭ Skipped: {skipped}")
     return {"synced": synced, "skipped": skipped}
