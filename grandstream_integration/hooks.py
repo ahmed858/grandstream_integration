@@ -65,7 +65,7 @@ scheduler_events = {
 }
 
 # Creates/updates the AI call analysis custom fields on every migrate.
-after_migrate = ["grandstream_integration.ai.setup.install"]
+# after_migrate = ["grandstream_integration.ai.setup.install"]
 
 # Marketers open their own call reviews at /my-calls.
 website_route_rules = [
