@@ -180,6 +180,30 @@ def make_call(extension, destination, lead=None, deal=None):
                      title="فشل الاتصال")
 
 
+PENDING_STATUSES = ["Initiated", "Ringing", "In Progress"]
+
+# A call still pending after this many hours is not live any more. The scheduled syncs only
+# look this far back, so logs that never got closed can't stretch the CDR request over
+# months (a ~10 MB response that the UCM drops mid-transfer).
+# Older logs are closed from the console with close_stale_pending_calls().
+PENDING_LOOKBACK_HOURS = 6
+
+
+def _recent_pending_logs(fields, limit=None):
+    since = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=-PENDING_LOOKBACK_HOURS)
+    return frappe.db.get_all(
+        "CRM Call Log",
+        filters={
+            "status": ["in", PENDING_STATUSES],
+            "telephony_medium": "Grandstream",
+            "creation": [">=", since],
+        },
+        fields=fields,
+        order_by="creation asc",
+        limit=limit,
+    )
+
+
 def sync_active_calls():
     """
     Update call logs that are still live, using UCM active calls.
@@ -190,15 +214,7 @@ def sync_active_calls():
 
     active_uniqueids = {c["uniqueid"]: c["status"] for c in active_calls if c.get("uniqueid")}
 
-    pending = frappe.db.get_all(
-        "CRM Call Log",
-        filters={
-            "status": ["in", ["Initiated", "Ringing"]],
-            "telephony_medium": "Grandstream",
-        },
-        fields=["name", "custom_uniqueid"],
-        limit=50,
-    )
+    pending = _recent_pending_logs(["name", "custom_uniqueid"], limit=50)
 
     for log in pending:
         uid = log.get("custom_uniqueid")
@@ -213,21 +229,12 @@ def sync_active_calls():
 
 def sync_ended_calls():
     """
-    Find call logs stuck in Initiated/Ringing/In Progress.
+    Find recent call logs stuck in Initiated/Ringing/In Progress.
     If they are no longer in the UCM active calls, fetch the CDR and update them.
     """
     from grandstream_integration.ucm_api import get_cdr_by_start_time
 
-    pending = frappe.db.get_all(
-        "CRM Call Log",
-        filters={
-            "status": ["in", ["Initiated", "Ringing", "In Progress"]],
-            "telephony_medium": "Grandstream",
-        },
-        fields=["name", "custom_uniqueid", "start_time", "creation"],
-        order_by="creation asc",
-    )
-
+    pending = _recent_pending_logs(["name", "custom_uniqueid", "start_time", "creation"])
     if not pending:
         return
 
@@ -246,14 +253,8 @@ def sync_ended_calls():
     if not ended_pending:
         return
 
-    # Map uniqueid -> log name for fast matching
-    uid_to_log = {
-        log["custom_uniqueid"]: log["name"]
-        for log in ended_pending
-        if log.get("custom_uniqueid")
-    }
-
     # Query the CDR with a window covering the oldest and newest pending call
+    # (at most PENDING_LOOKBACK_HOURS wide).
     first = ended_pending[0]
     last = ended_pending[-1]
 
@@ -264,18 +265,103 @@ def sync_ended_calls():
     if not cdr_records:
         return
 
-    updated = 0
+    updated = _close_from_cdr(ended_pending, cdr_records)
+    if updated:
+        frappe.db.commit()
+        print(f"[SYNC ENDED] updated {updated} calls")
+
+
+def close_stale_pending_calls(dry_run=True, fail_unmatched=False):
+    """
+    One-off, from bench console: close Grandstream call logs still in Initiated / Ringing /
+    In Progress after PENDING_LOOKBACK_HOURS, which the scheduled sync no longer looks at.
+
+    The CDR is fetched one day at a time. Logs found in it get their real status, duration
+    and recording. dry_run=True (default) only reports. fail_unmatched=True also marks the
+    logs that have no CDR record (the call never reached the PBX) as Failed.
+    AI analysis is not queued for these old calls.
+    """
+    from grandstream_integration.ucm_api import get_cdr_by_start_time
+
+    since = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=-PENDING_LOOKBACK_HOURS)
+    stale = frappe.db.get_all(
+        "CRM Call Log",
+        filters={
+            "status": ["in", PENDING_STATUSES],
+            "telephony_medium": "Grandstream",
+            "creation": ["<", since],
+        },
+        fields=["name", "custom_uniqueid", "start_time", "creation"],
+        order_by="creation asc",
+        limit_page_length=0,
+    )
+
+    by_day = {}
+    for log in stale:
+        started = frappe.utils.get_datetime(log.get("start_time") or log.get("creation"))
+        by_day.setdefault(started.date(), []).append((started, log))
+
+    matched, unmatched, updated = [], [], 0
+    for day in sorted(by_day):
+        entries = by_day[day]
+        logs = [log for _, log in entries]
+        records = get_cdr_by_start_time(min(t for t, _ in entries), max(t for t, _ in entries))
+        found = _match_cdr(logs, records or [])
+        matched += [log for log in logs if log["name"] in found]
+        unmatched += [log for log in logs if log["name"] not in found]
+        if not dry_run:
+            updated += _close_from_cdr(logs, records or [], queue_ai=False)
+            frappe.db.commit()
+
+    if fail_unmatched and not dry_run:
+        for log in unmatched:
+            frappe.db.set_value("CRM Call Log", log["name"], "status", "Failed")
+        updated += len(unmatched)
+        frappe.db.commit()
+
+    return {
+        "stale": len(stale),
+        "days": len(by_day),
+        "found_in_cdr": len(matched),
+        "not_in_cdr": len(unmatched),
+        "updated": updated,
+    }
+
+
+def _cdr_legs(record):
+    """main_cdr and every sub_cdr_N of a multi-leg record, or the flat record itself."""
+    if not isinstance(record, dict):
+        return []
+    if "main_cdr" not in record:
+        return [record]
+    legs = [record["main_cdr"]]
+    i = 1
+    while f"sub_cdr_{i}" in record:
+        legs.append(record[f"sub_cdr_{i}"])
+        i += 1
+    return [leg for leg in legs if isinstance(leg, dict)]
+
+
+def _match_cdr(logs, cdr_records):
+    """Map log name -> its CDR record. A log matches when any leg carries its uniqueid."""
+    uid_to_log = {log["custom_uniqueid"]: log["name"] for log in logs if log.get("custom_uniqueid")}
+    found = {}
     for record in cdr_records:
-        # The response has either a nested main_cdr or the record itself
-        cdr = record.get("main_cdr") if isinstance(record, dict) and "main_cdr" in record else record
-        if not isinstance(cdr, dict):
-            continue
+        for leg in _cdr_legs(record):
+            log_name = uid_to_log.get(leg.get("uniqueid", ""))
+            if log_name and log_name not in found:
+                found[log_name] = record
+    return found
 
+
+def _close_from_cdr(logs, cdr_records, queue_ai=True):
+    """Write status, times, duration and recording from the CDR onto the matching logs."""
+    updated = 0
+    for log_name, record in _match_cdr(logs, cdr_records).items():
+        legs = _cdr_legs(record)
+        # main_cdr (or the flat record) has the call totals
+        cdr = legs[0]
         uniqueid = cdr.get("uniqueid", "")
-        log_name = uid_to_log.get(uniqueid)
-        if not log_name:
-            continue
-
         disposition = cdr.get("disposition", "")
         new_status = _map_disposition(disposition)
 
@@ -299,13 +385,16 @@ def sync_ended_calls():
             if answer_time:
                 call_log.start_time = answer_time
 
-            # A missing/odd recording must never block the status update
-            recording = _parse_recording(cdr.get("recordfiles"))
+            # A missing/odd recording must never block the status update.
+            # The recording can sit on a sub leg rather than on main_cdr.
+            recording = next(
+                (r for r in (_parse_recording(leg.get("recordfiles")) for leg in legs) if r), None
+            )
             if recording:
                 call_log.recording_url = recording
 
             call_log.save(ignore_permissions=True)
-            if new_status == "Completed" and call_log.recording_url:
+            if queue_ai and new_status == "Completed" and call_log.recording_url:
                 _queue_ai_analysis(call_log)
             frappe.publish_realtime("call_log_update", {
                 "name":   log_name,
@@ -320,6 +409,4 @@ def sync_ended_calls():
                 message=frappe.get_traceback(),
             )
 
-    if updated:
-        frappe.db.commit()
-        print(f"[SYNC ENDED] updated {updated} calls")
+    return updated
